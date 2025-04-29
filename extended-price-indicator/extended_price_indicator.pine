@@ -1,0 +1,53 @@
+//@version=6
+// Extended Price Indicator
+// Plots a red dot above the bar when the selected signal price (default: High) exceeds
+// a user-defined multiplier times a moving average (SMA or EMA). Includes alert functionality
+// for when the signal price crosses above the threshold.
+// Author: [Your Name or Handle, if desired]
+// License: MIT
+
+indicator("Extended Price Indicator", overlay=true)
+
+// Input settings for moving average period, MA type, multiplier, and signal threshold
+ma_period = input.int(200, title="MA Period", minval=1, step=1, tooltip="Number of bars for the moving average")
+ma_type = input.string("SMA", title="Moving Average Type", options=["SMA", "EMA"], tooltip="Choose SMA (Simple) or EMA (Exponential)")
+multiplier = input.float(3.0, title="Multiplier", minval=0.1, step=0.1, tooltip="Multiplier for MA threshold (e.g., 3.0 for 3x MA)")
+signal_type = input.string("High", title="Signal Threshold", options=["Close", "High", "Low", "Open"], tooltip="Price to compare against threshold")
+
+// Error handling: Check for valid moving average calculation
+var bool is_ma_valid = not na(ma_period) and ma_period >= 1
+if not is_ma_valid
+    runtime.error("Invalid MA Period. Must be a positive integer.")
+
+// Calculate Moving Average based on user selection
+ma = switch ma_type
+    "SMA" => ta.sma(close, ma_period)
+    "EMA" => ta.ema(close, ma_period)
+    => runtime.error("Invalid MA Type selected.")  // Fallback for unexpected MA type
+
+// Calculate threshold (multiplier times the MA)
+threshold = ma * multiplier
+
+// Determine the signal price based on user selection
+signal_price = switch signal_type
+    "Close" => close
+    "High" => high
+    "Low" => low
+    "Open" => open
+    => runtime.error("Invalid Signal Threshold selected.")  // Fallback for unexpected signal type
+
+// Check if the selected signal price is at or above the threshold
+signal_bool = signal_price >= threshold
+
+// Detect when the signal price crosses above the threshold for alerts
+alert_condition = ta.crossover(signal_price, threshold)
+
+// Create an alert condition for when the threshold is crossed
+alertcondition(alert_condition, title="Price Crosses MA Threshold", message="Price {{signal_type}} crossed above {{multiplier}}x {{ma_type}}({{ma_period}}) at {{plot_0}}")
+
+// Calculate position for dot (above the bar's high with a small offset)
+offset = ta.atr(14) * 0.1  // Small offset based on ATR for visibility
+dot_position = signal_bool ? high + offset : na
+
+// Plot a red dot above the bar when the condition is met
+plot(dot_position, title="Extended Price Signal", style=plot.style_circles, color=color.red, linewidth=2)
