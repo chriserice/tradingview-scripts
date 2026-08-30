@@ -1,0 +1,330 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Rate of Change — Visser-style multi-horizon momentum + relative benchmark dashboard
+//
+// Stability notes (blank pane after idle):
+// - Absolute ROC never depends on the benchmark feed.
+// - request.security uses ignore_invalid_symbol so a dead BM feed cannot abort the script.
+// - Status badge is recreated if missing (idle partial recalc can skip barstate.isfirst).
+// - table.merge_cells runs once, not every islast tick.
+
+//@version=6
+indicator("Rate of Change", shorttitle="ROC", overlay=false, max_labels_count=50, max_lines_count=50, max_bars_back=5000)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+grpPeriods   = "ROC Periods"
+src          = input.source(close, "Source", group=grpPeriods)
+shortLen     = input.int(20,  "Short ROC Length",  minval=2, maxval=500, group=grpPeriods, tooltip="Near-term rate of change (default 20).")
+medLen       = input.int(60,  "Medium ROC Length", minval=2, maxval=1000, group=grpPeriods, tooltip="Swing rate of change (default 60).")
+longLen      = input.int(100, "Long ROC Length",   minval=2, maxval=2000, group=grpPeriods, tooltip="Structural rate of change (default 100).")
+smoothLen    = input.int(3,   "ROC Smoothing (EMA)", minval=1, maxval=50, group=grpPeriods, tooltip="1 = raw ROC. 3 softens noise without killing turns.")
+
+grpBench     = "Relative Benchmark"
+useBench     = input.bool(true, "Enable Relative Benchmark", group=grpBench, tooltip="Computes asset ROC minus benchmark ROC. Used for alerts/badge; not plotted by default. Absolute ROC still plots if the benchmark feed drops.")
+// Prefer an exchange-qualified default — bare BTCUSD can fail to resolve after idle reconnects.
+benchSym     = input.symbol("BITSTAMP:BTCUSD", "Benchmark Symbol", group=grpBench, tooltip="Use exchange-qualified symbols (BITSTAMP:BTCUSD, BINANCE:BTCUSDT, NASDAQ:QQQ). Bare tickers are more likely to go stale after idle.")
+benchTf      = input.timeframe("", "Benchmark Timeframe", group=grpBench, tooltip="Blank = chart timeframe.")
+
+grpView      = "Default View (toggle extras)"
+showAbsRoc   = input.bool(true,  "Short ROC", group=grpView)
+showHisto    = input.bool(true,  "Short ROC as Histogram", group=grpView, tooltip="Cleaner quick-glance bars instead of a thin line.")
+showRelRoc   = input.bool(false, "Relative Short ROC", group=grpView)
+showMedRoc   = input.bool(false, "Medium ROC", group=grpView)
+showLongRoc  = input.bool(false, "Long ROC", group=grpView)
+showAccel    = input.bool(false, "Acceleration (ΔROC)", group=grpView, tooltip="Second derivative — Visser’s “getting less bad / more bad” signal.")
+showMaSlope  = input.bool(false, "200-MA Slope", group=grpView)
+
+grpHeat      = "Overheat Detection"
+heatMode     = input.string("Z-Score", "Overheat Mode", options=["Z-Score", "Fixed %", "Both"], group=grpHeat, tooltip="Z-Score adapts to each asset’s own history.")
+zLookback    = input.int(252, "Z-Score Lookback", minval=20, maxval=2000, group=grpHeat, tooltip="~1 trading year on daily. On weekly charts consider 52–104.")
+zHot         = input.float(2.0,  "Z Overheated (+)", minval=0.5, step=0.1, group=grpHeat)
+zCold        = input.float(-2.0, "Z Oversold (−)",   maxval=-0.5, step=0.1, group=grpHeat)
+fixedHot     = input.float(25.0, "Fixed Overheated ROC %", minval=0.1, step=0.5, group=grpHeat)
+fixedCold    = input.float(-20.0,"Fixed Oversold ROC %",   maxval=-0.1, step=0.5, group=grpHeat)
+// Default heat is absolute so a dead benchmark cannot blank OB/OS coloring.
+heatSource   = input.string("Short Absolute", "Heat Measured On", options=["Short Absolute", "Short Relative", "Medium Absolute"], group=grpHeat)
+useBgHeat    = input.bool(true, "Background Heat Tint", group=grpHeat)
+showBands    = input.bool(true, "Show OB/OS Bands", group=grpHeat)
+
+grpTrend     = "Trend Context"
+maLen        = input.int(200, "MA Length", minval=20, maxval=500, group=grpTrend)
+maSlopeLen   = input.int(20,  "MA Slope Lookback", minval=2, maxval=100, group=grpTrend)
+
+grpDisp      = "Display"
+showZero     = input.bool(true, "Zero Line", group=grpDisp)
+showTable    = input.bool(true, "Status Badge", group=grpDisp)
+tablePos     = input.string("Top Right", "Badge Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=grpDisp)
+showFill     = input.bool(false, "Fill Short ROC to Zero", group=grpDisp)
+
+grpCol       = "Colors"
+cShort       = input.color(color.new(#2962FF, 0), "Short ROC", group=grpCol)
+cMed         = input.color(color.new(#FF6D00, 0), "Medium ROC", group=grpCol)
+cLong        = input.color(color.new(#787B86, 0), "Long ROC", group=grpCol)
+cRel         = input.color(color.new(#E040FB, 0), "Relative ROC", group=grpCol)
+cAccel       = input.color(color.new(#00E676, 0), "Acceleration", group=grpCol)
+cMaSlope     = input.color(color.new(#26C6DA, 0), "MA Slope", group=grpCol)
+cHot         = input.color(color.new(#FF5252, 85), "Overheated BG", group=grpCol)
+cCold        = input.color(color.new(#40C4FF, 85), "Oversold BG", group=grpCol)
+cZero        = input.color(color.new(#787B86, 0), "Zero Line", group=grpCol)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Prefer built-in ta.roc (same math, fewer custom lookback edge cases)
+calcRoc(series float price, int len) =>
+    ta.roc(price, len)
+
+smoothSeries(series float x, int len) =>
+    len <= 1 ? x : ta.ema(x, len)
+
+calcZ(series float x, int len) =>
+    float m = ta.sma(x, len)
+    float s = ta.stdev(x, len)
+    na(x) or na(m) or na(s) or s == 0.0 ? na : (x - m) / s
+
+posFromString(string p) =>
+    p == "Top Left" ? position.top_left : p == "Bottom Right" ? position.bottom_right : p == "Bottom Left" ? position.bottom_left : position.top_right
+
+fstr(float v) =>
+    na(v) ? "—" : str.tostring(v, "#.##") + "%"
+
+zstr(float v) =>
+    na(v) ? "—" : str.tostring(v, "#.##") + "σ"
+
+colSign(float v) =>
+    na(v) ? color.gray : v > 0 ? #26A69A : v < 0 ? #EF5350 : color.gray
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ABSOLUTE ROC (never depends on benchmark — keeps pane alive if BM feed dies)
+// ══════════════════════════════════════════════════════════════════════════════
+
+float rocS_raw = calcRoc(src, shortLen)
+float rocM_raw = calcRoc(src, medLen)
+float rocL_raw = calcRoc(src, longLen)
+
+float rocS = smoothSeries(rocS_raw, smoothLen)
+float rocM = smoothSeries(rocM_raw, smoothLen)
+float rocL = smoothSeries(rocL_raw, smoothLen)
+
+int accelLB = math.max(3, int(math.round(shortLen / 4.0)))
+float accel = na(rocS) or na(rocS[accelLB]) ? na : rocS - rocS[accelLB]
+
+float ma = ta.sma(src, maLen)
+float maSlope = calcRoc(ma, maSlopeLen)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BENCHMARK (optional) — failure must NOT kill absolute plots
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ignore_invalid_symbol=true: idle/reconnect or bad ticker returns na instead of aborting the script.
+// This was the main blank-pane failure mode after the chart sat idle.
+float benchClose = request.security(benchSym, benchTf, close, barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol=true)
+
+float benchRocS_raw = calcRoc(benchClose, shortLen)
+float benchRocM_raw = calcRoc(benchClose, medLen)
+float benchRocL_raw = calcRoc(benchClose, longLen)
+float benchRocS = smoothSeries(benchRocS_raw, smoothLen)
+float benchRocM = smoothSeries(benchRocM_raw, smoothLen)
+float benchRocL = smoothSeries(benchRocL_raw, smoothLen)
+
+bool benchOk = useBench and not na(benchClose) and not na(benchRocS)
+
+float relS = benchOk and not na(rocS) ? rocS - benchRocS : na
+float relM = benchOk and not na(rocM) ? rocM - benchRocM : na
+float relL = benchOk and not na(rocL) ? rocL - benchRocL : na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// HEAT / OB-OS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// If user selected Short Relative but BM is dead, fall back to absolute short ROC.
+float heatSeries = heatSource == "Medium Absolute" ? rocM : heatSource == "Short Relative" and benchOk ? relS : rocS
+float heatMean = ta.sma(heatSeries, zLookback)
+float heatStd  = ta.stdev(heatSeries, zLookback)
+float heatZ = calcZ(heatSeries, zLookback)
+
+float zUpper = not na(heatMean) and not na(heatStd) ? heatMean + zHot * heatStd : na
+float zLower = not na(heatMean) and not na(heatStd) ? heatMean + zCold * heatStd : na
+float upperBand = heatMode == "Fixed %" ? fixedHot : heatMode == "Both" ? math.max(nz(zUpper, fixedHot), fixedHot) : zUpper
+float lowerBand = heatMode == "Fixed %" ? fixedCold : heatMode == "Both" ? math.min(nz(zLower, fixedCold), fixedCold) : zLower
+
+bool zHotHit    = not na(heatZ) and heatZ >= zHot
+bool zColdHit   = not na(heatZ) and heatZ <= zCold
+bool fixHotHit  = not na(heatSeries) and heatSeries >= fixedHot
+bool fixColdHit = not na(heatSeries) and heatSeries <= fixedCold
+
+bool isHot  = heatMode == "Z-Score" ? zHotHit : heatMode == "Fixed %" ? fixHotHit : zHotHit or fixHotHit
+bool isCold = heatMode == "Z-Score" ? zColdHit : heatMode == "Fixed %" ? fixColdHit : zColdHit or fixColdHit
+
+color histoCol = isHot ? color.new(#FF5252, 20) : isCold ? color.new(#40C4FF, 20) : not na(rocS) and rocS >= 0 ? color.new(#2962FF, 45) : color.new(#787B86, 55)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EVENTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool hotOn   = isHot and not isHot[1]
+bool hotOff  = not isHot and isHot[1]
+bool coldOn  = isCold and not isCold[1]
+bool coldOff = not isCold and isCold[1]
+
+bool rocS_crossUp    = ta.crossover(rocS, 0.0)
+bool rocS_crossDn    = ta.crossunder(rocS, 0.0)
+bool relS_crossUp    = ta.crossover(relS, 0.0)
+bool relS_crossDn    = ta.crossunder(relS, 0.0)
+bool accel_crossUp   = ta.crossover(accel, 0.0)
+bool accel_crossDn   = ta.crossunder(accel, 0.0)
+bool maSlope_crossUp = ta.crossover(maSlope, 0.0)
+bool maSlope_crossDn = ta.crossunder(maSlope, 0.0)
+
+float pricePivotLow  = ta.pivotlow(low, 5, 5)
+float pricePivotHigh = ta.pivothigh(high, 5, 5)
+float rocPivotLow    = ta.pivotlow(rocS, 5, 5)
+float rocPivotHigh   = ta.pivothigh(rocS, 5, 5)
+
+var float lastPricePL = na
+var float lastPricePH = na
+var float lastRocPL   = na
+var float lastRocPH   = na
+
+if not na(pricePivotLow)
+    lastPricePL := pricePivotLow
+if not na(pricePivotHigh)
+    lastPricePH := pricePivotHigh
+if not na(rocPivotLow)
+    lastRocPL := rocPivotLow
+if not na(rocPivotHigh)
+    lastRocPH := rocPivotHigh
+
+bool bullDiv = not na(pricePivotLow) and not na(rocPivotLow) and not na(lastPricePL[1]) and not na(lastRocPL[1]) and pricePivotLow < lastPricePL[1] and rocPivotLow > lastRocPL[1]
+bool bearDiv = not na(pricePivotHigh) and not na(rocPivotHigh) and not na(lastPricePH[1]) and not na(lastRocPH[1]) and pricePivotHigh > lastPricePH[1] and rocPivotHigh < lastRocPH[1]
+
+bool chaseRisk = hotOn and not na(accel) and accel > 0
+bool repair    = isCold and accel_crossUp
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PLOTS — absolute ROC always drawn when enabled (independent of BM)
+// ══════════════════════════════════════════════════════════════════════════════
+
+hline(0, "Zero", color=showZero ? cZero : color.new(cZero, 100), linestyle=hline.style_dotted, linewidth=1)
+
+pUpper = plot(showBands ? upperBand : na, "Overbought", color=color.new(#FF5252, 50), linewidth=1, style=plot.style_linebr)
+pLower = plot(showBands ? lowerBand : na, "Oversold", color=color.new(#40C4FF, 50), linewidth=1, style=plot.style_linebr)
+fill(pUpper, pLower, color=showBands ? color.new(#787B86, 94) : na, title="Neutral Zone")
+
+zeroPlot = plot(0.0, display=display.none)
+
+// Primary glance series — always bound to absolute rocS
+plot(showHisto and showAbsRoc ? rocS : na, "ROC Hist", style=plot.style_columns, color=histoCol, histbase=0)
+pShort = plot(showAbsRoc and not showHisto ? rocS : na, "Short ROC", color=cShort, linewidth=2)
+plot(showAbsRoc and showHisto ? rocS : na, "ROC Guide", color=color.new(cShort, 55), linewidth=1)
+
+plot(showMedRoc ? rocM : na, "Medium ROC", color=cMed, linewidth=2)
+plot(showLongRoc ? rocL : na, "Long ROC", color=cLong, linewidth=1)
+plot(showRelRoc and benchOk ? relS : na, "Relative Short ROC", color=cRel, linewidth=2)
+plot(showAccel ? accel : na, "Acceleration", color=cAccel, linewidth=1)
+plot(showMaSlope ? maSlope : na, "200-MA Slope", color=cMaSlope, linewidth=1)
+
+bgcolor(useBgHeat and isHot ? cHot : useBgHeat and isCold ? cCold : na, title="Heat Background")
+fill(pShort, zeroPlot, color=showFill and showAbsRoc and not showHisto and not na(rocS) ? (rocS >= 0 ? color.new(#2962FF, 90) : color.new(#FF5252, 90)) : na, title="Short ROC Fill")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STATUS BADGE
+// ══════════════════════════════════════════════════════════════════════════════
+
+var table info = na
+var bool cellsMerged = false
+
+// Recreate badge if missing (idle partial recalc can skip isfirst)
+if showTable and na(info) and (barstate.isfirst or barstate.islast)
+    info := table.new(posFromString(tablePos), 2, 5, border_width=1)
+    cellsMerged := false
+
+if showTable and barstate.islast and not na(info)
+    string glance = isHot ? "OVERBOUGHT" : isCold ? "OVERSOLD" : not na(rocS) and rocS > 0 ? "NEUTRAL +" : not na(rocS) and rocS < 0 ? "NEUTRAL −" : "FLAT"
+    color badgeBg = isHot ? #FF5252 : isCold ? #29B6F6 : color.new(#1E222D, 0)
+    color badgeTx = isHot or isCold ? color.white : color.silver
+
+    table.cell(info, 0, 0, glance, text_color=badgeTx, bgcolor=badgeBg, text_size=size.normal, text_halign=text.align_center)
+    if not cellsMerged
+        table.merge_cells(info, 0, 0, 1, 0)
+        cellsMerged := true
+
+    table.cell(info, 0, 1, "ROC " + str.tostring(shortLen), text_color=color.gray, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+    table.cell(info, 1, 1, fstr(rocS), text_color=colSign(rocS), bgcolor=color.new(#1E222D, 0), text_size=size.small)
+
+    table.cell(info, 0, 2, "Z-Score", text_color=color.gray, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+    table.cell(info, 1, 2, zstr(heatZ), text_color=isHot ? #FF5252 : isCold ? #29B6F6 : color.white, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+
+    string relTxt = benchOk ? fstr(relS) : useBench ? "BM n/a" : "off"
+    table.cell(info, 0, 3, useBench ? "vs BM" : "Rel", text_color=color.gray, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+    table.cell(info, 1, 3, relTxt, text_color=benchOk ? colSign(relS) : color.gray, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+
+    // Feed health — if this sticks on "BM n/a", fix the benchmark symbol (not a blank-pane bug)
+    string feedTxt = not useBench ? "off" : benchOk ? "ok" : "stale/na"
+    table.cell(info, 0, 4, "BM feed", text_color=color.gray, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+    table.cell(info, 1, 4, feedTxt, text_color=benchOk ? #26A69A : useBench ? #EF5350 : color.gray, bgcolor=color.new(#1E222D, 0), text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS — fire only on the realtime last bar to avoid recalc storms after idle
+// ══════════════════════════════════════════════════════════════════════════════
+
+bool liveBar = barstate.islast and barstate.isconfirmed
+
+if liveBar and hotOn
+    alert("ROC OVERHEATED on " + syminfo.ticker + " | heat=" + str.tostring(heatSeries, "#.##") + "% z=" + str.tostring(heatZ, "#.##") + " vs " + str.tostring(benchSym), alert.freq_once_per_bar_close)
+if liveBar and coldOn
+    alert("ROC OVERSOLD on " + syminfo.ticker + " | heat=" + str.tostring(heatSeries, "#.##") + "% z=" + str.tostring(heatZ, "#.##") + " vs " + str.tostring(benchSym), alert.freq_once_per_bar_close)
+if liveBar and hotOff
+    alert("ROC exited OVERHEATED on " + syminfo.ticker + " | momentum cooling", alert.freq_once_per_bar_close)
+if liveBar and coldOff
+    alert("ROC exited OVERSOLD on " + syminfo.ticker + " | washout ending", alert.freq_once_per_bar_close)
+if liveBar and rocS_crossUp
+    alert("Short ROC crossed ABOVE 0 on " + syminfo.ticker + " | " + str.tostring(rocS, "#.##") + "%", alert.freq_once_per_bar_close)
+if liveBar and rocS_crossDn
+    alert("Short ROC crossed BELOW 0 on " + syminfo.ticker + " | " + str.tostring(rocS, "#.##") + "%", alert.freq_once_per_bar_close)
+if liveBar and benchOk and relS_crossUp
+    alert("RELATIVE ROC flipped POSITIVE on " + syminfo.ticker + " vs " + str.tostring(benchSym) + " | rel=" + str.tostring(relS, "#.##") + "%", alert.freq_once_per_bar_close)
+if liveBar and benchOk and relS_crossDn
+    alert("RELATIVE ROC flipped NEGATIVE on " + syminfo.ticker + " vs " + str.tostring(benchSym) + " | rel=" + str.tostring(relS, "#.##") + "%", alert.freq_once_per_bar_close)
+if liveBar and accel_crossUp
+    alert("Acceleration turned UP on " + syminfo.ticker + " | ROC getting less bad / improving", alert.freq_once_per_bar_close)
+if liveBar and accel_crossDn
+    alert("Acceleration turned DOWN on " + syminfo.ticker + " | ROC fading", alert.freq_once_per_bar_close)
+if liveBar and maSlope_crossUp
+    alert("200-MA slope turned UP on " + syminfo.ticker, alert.freq_once_per_bar_close)
+if liveBar and maSlope_crossDn
+    alert("200-MA slope turned DOWN on " + syminfo.ticker, alert.freq_once_per_bar_close)
+if liveBar and bullDiv
+    alert("Bullish ROC divergence on " + syminfo.ticker, alert.freq_once_per_bar_close)
+if liveBar and bearDiv
+    alert("Bearish ROC divergence on " + syminfo.ticker, alert.freq_once_per_bar_close)
+if liveBar and chaseRisk
+    alert("Chase risk: " + syminfo.ticker + " overheated and still accelerating", alert.freq_once_per_bar_close)
+if liveBar and repair
+    alert("Washout repair: " + syminfo.ticker + " oversold with acceleration turning up", alert.freq_once_per_bar_close)
+
+alertcondition(hotOn,   title="Overheated ON",  message="ROC overheated on {{ticker}}")
+alertcondition(hotOff,  title="Overheated OFF", message="ROC left overheated zone on {{ticker}}")
+alertcondition(coldOn,  title="Oversold ON",    message="ROC oversold on {{ticker}}")
+alertcondition(coldOff, title="Oversold OFF",   message="ROC left oversold zone on {{ticker}}")
+
+alertcondition(rocS_crossUp, title="Short ROC > 0", message="Short ROC crossed above zero on {{ticker}}")
+alertcondition(rocS_crossDn, title="Short ROC < 0", message="Short ROC crossed below zero on {{ticker}}")
+
+alertcondition(relS_crossUp, title="Relative ROC > 0", message="{{ticker}} relative ROC flipped positive vs benchmark")
+alertcondition(relS_crossDn, title="Relative ROC < 0", message="{{ticker}} relative ROC flipped negative vs benchmark")
+
+alertcondition(accel_crossUp, title="Acceleration UP",   message="ROC acceleration turned up on {{ticker}} (getting less bad)")
+alertcondition(accel_crossDn, title="Acceleration DOWN", message="ROC acceleration turned down on {{ticker}} (fading)")
+
+alertcondition(maSlope_crossUp, title="MA Slope UP",   message="200-MA slope turned up on {{ticker}}")
+alertcondition(maSlope_crossDn, title="MA Slope DOWN", message="200-MA slope turned down on {{ticker}}")
+
+alertcondition(bullDiv, title="Bullish Divergence", message="Bullish price/ROC divergence on {{ticker}}")
+alertcondition(bearDiv, title="Bearish Divergence", message="Bearish price/ROC divergence on {{ticker}}")
+
+alertcondition(chaseRisk, title="Overheated + Still Accelerating", message="Chase risk: {{ticker}} overheated and still accelerating")
+alertcondition(repair,    title="Oversold + Accel UP (Less Bad)", message="Washout repair: {{ticker}} oversold with acceleration turning up")
