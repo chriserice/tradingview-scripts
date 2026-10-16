@@ -6,11 +6,13 @@
 //  independent reconstruction, NOT the official indicator.
 //
 //  WHAT CHANGED FROM v2 (all changes backtested on BTC / ASTS / SPX weekly,
-//  2018–2026, long/flat regime strategy, no lookahead):
-//    1. Flip cooldown (default 4 bars): after a flip, opposite flips are
-//       ignored for N bars. This was the single biggest win in testing —
-//       BTC weekly went from 67 flips (79% whipsawed) to 33 flips (58%),
-//       CAGR 37.6% -> 40.5%, max drawdown -63.6% -> -46.7%.
+//  2018-2026, long/flat regime strategy, no lookahead):
+//    1. Flip cooldown (input default 3 bars; see the cooldown semantics
+//       note at the input below): after a flip, opposite flips are ignored
+//       for N bars. This was the single biggest win in testing: on BTC
+//       weekly the binary prototype went from 67 flips (79% whipsawed) to
+//       33 flips (58%). Current backtest evidence for the shipped
+//       three-state mode and the current defaults is in README.md.
 //    2. Three-state regime via a faster "caution band" (default 2.0x ATR):
 //       RISK-ON (both lines bullish) / CAUTION (slow bullish, fast bearish)
 //       / RISK-OFF (slow bearish). Maps to 1.0 / 0.5 / 0 exposure. Best
@@ -25,11 +27,21 @@
 //      the noise it removed). Kept as an input, defaults to 1 = off.
 //    * Volatility-adaptive ATR multiplier: mixed-to-negative. Dropped.
 //
-//  HONEST LIMITS: v2 as published flips ~7-8x/year on BTC weekly — far noisier
-//  than the marketed "handful of trades per year". v3's cooldown closes most
-//  of that gap (~3.8/yr on BTC). This is still a lagging, long-only regime
-//  filter: red means step aside / raise cash, never a short signal. Validate
-//  on your own assets and timeframes before sizing off it.
+//  HONEST LIMITS: v2 as published flips ~7-8x/year on BTC weekly, far noisier
+//  than the marketed "handful of trades per year". The cooldown closes most
+//  of that gap (roughly 3 to 5 flips/yr on BTC weekly depending on preset
+//  and window). This is still a lagging, long-only regime filter: red means
+//  step aside / raise cash, never a short signal. Validate on your own
+//  assets and timeframes before sizing off it.
+//
+//  2026-10 SETTINGS REVIEW (full review: REVIEW.md next to this file):
+//    * Default preset is now Conservative (22 / 3.5). In a 120-config sweep
+//      across the current book, 22/3.5 ranked #1 under every weighting and
+//      window tested; the old 22/3.0 default ranked 42/120. The 22/3.0
+//      preset stays available in the list, labeled Legacy.
+//    * Cooldown input default is now 3, which reproduces the backtested
+//      "cooldown 4" strength exactly (semantics differ by one bar between
+//      this script and the reference engine; see the input comment).
 // =============================================================================
 
 indicator("Money Line v3 (Bullmania-Style)", shorttitle="MoneyLine v3", overlay=true, max_labels_count=500, max_lines_count=500)
@@ -38,14 +50,14 @@ indicator("Money Line v3 (Bullmania-Style)", shorttitle="MoneyLine v3", overlay=
 //  INPUTS
 // -----------------------------------------------------------------------------
 grp_core   = "Core Methodology"
-preset     = input.string("Conservative (22 / 3.0)", "Preset", options=["Conservative (22 / 3.0)", "Balanced (14 / 2.5)", "Aggressive (10 / 2.0)", "Custom"], group=grp_core, tooltip="One-click parameter sets. Choose Custom to use the manual inputs below.")
+preset     = input.string("Conservative (22 / 3.5)", "Preset", options=["Conservative (22 / 3.5)", "Balanced (14 / 2.5)", "Aggressive (10 / 2.0)", "Conservative Legacy (22 / 3.0)", "Custom"], group=grp_core, tooltip="One-click parameter sets. Choose Custom to use the manual inputs below.")
 atrLenCus  = input.int(22,    "ATR Length (Custom preset)",        minval=1, group=grp_core)
 atrMultCus = input.float(3.0, "ATR Multiplier (Custom preset)",    minval=0.1, step=0.1, group=grp_core)
 hhLenCus   = input.int(22,    "Donchian Anchor Length (Custom)",    minval=1, group=grp_core)
 
 usePreset = preset != "Custom"
 atrLen  = usePreset ? (preset == "Balanced (14 / 2.5)" ? 14 : preset == "Aggressive (10 / 2.0)" ? 10 : 22)     : atrLenCus
-atrMult = usePreset ? (preset == "Balanced (14 / 2.5)" ? 2.5 : preset == "Aggressive (10 / 2.0)" ? 2.0 : 3.0)   : atrMultCus
+atrMult = usePreset ? (preset == "Balanced (14 / 2.5)" ? 2.5 : preset == "Aggressive (10 / 2.0)" ? 2.0 : preset == "Conservative Legacy (22 / 3.0)" ? 3.0 : 3.5)   : atrMultCus
 hhLen   = usePreset ? (preset == "Balanced (14 / 2.5)" ? 14 : preset == "Aggressive (10 / 2.0)" ? 10 : 22)     : hhLenCus
 
 useWicks  = input.bool(true,  "Use Wicks (High/Low) for Flip",      group=grp_core, tooltip="True: flips trigger on wick crosses (more responsive, more noise). False: close/EMA only.")
@@ -53,7 +65,12 @@ srcMA     = input.source(close, "Confirmation Source",               group=grp_c
 smoothLen = input.int(3,      "Confirmation Smoothing (EMA)",        minval=1, group=grp_core)
 
 grp_v3     = "v3 Noise Controls"
-cooldownBars = input.int(4,   "Flip Cooldown (bars)",                minval=0, group=grp_v3, tooltip="After a flip, ignore opposite flips for N bars. Backtested optimum = 4 on BTC/ASTS/SPX weekly. 0 = v2 behavior.")
+// Cooldown semantics (REVIEW.md finding H2): this script blocks C bars
+// after a flip; the Python reference engine blocks C-1 bars for the same
+// input value. So the input value 3 here reproduces exactly the strength
+// the backtests validated as "cooldown 4". The logic is unchanged; only
+// the default input moved from 4 to 3 to match the backtested strength.
+cooldownBars = input.int(3,   "Flip Cooldown (bars)",                minval=0, group=grp_v3, tooltip="After a flip, ignore opposite flips for N bars. Default 3 = the backtested 'cooldown 4' strength (this script blocks one more bar than the reference engine for the same input; see code comment). 0 = v2 behavior.")
 confirmBars  = input.int(1,   "Flip Confirmation (bars)",            minval=1, group=grp_v3, tooltip="Flip requires N consecutive bars of the cross condition. Backtesting showed 2+ hurts (lag > noise saved). Leave at 1.")
 useBand      = input.bool(true,"Caution Band (three-state regime)",  group=grp_v3, tooltip="Adds a faster inner line. Slow bull + fast bear = CAUTION (half risk).")
 fastMult     = input.float(2.0,"Caution Band ATR Multiplier",         minval=0.5, step=0.1, group=grp_v3)
