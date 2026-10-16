@@ -1,0 +1,75 @@
+// Beardo-style "Volume Breakout Candles" - reverse-engineered replica
+// Family per his posts: breakout candles colored by volume. Yellow = LOW volume.
+//
+// IDENTIFICATION (chart fit, see LVBC.md) - these are the DEFAULTS below.
+// Pixel scan of 4 of his charts (IGV Oct 16; QQQ Oct 12/9/7 2026), 316 candle
+// instances, 147 unique symbol-days, fitted vs Yahoo daily OHLCV:
+//   flagged candles: 7 yellow + 6 lime (bright green), reproduced 13/13, 0 false
+//   positives. Rule: CLOSE breaks the prior 20-day high/low (of highs/lows);
+//   volume vs SMA(volume,20) incl. current bar: < 0.90x = yellow, > 1.00x = lime;
+//   0.90-1.00x = dead zone, unmarked. Feasible region: lookback 14-23 unified,
+//   low threshold in (0.79, 0.95), high threshold in (0.95, 1.25) - 20/0.90/1.00
+//   are the canonical values inside it. REFUTED by the fit: intraday (high-based)
+//   breaks, close-vs-prior-close-high, monthly/drawn pivot crosses, geometry gates.
+//   Lime fires on range breaks in EITHER direction (QQQ 2026-07-29 lime is a
+//   high-volume breakdown at the summer low). The aqua low-volume breakdown is
+//   the mirror his "tops and bottoms" remark implies but these charts never
+//   show it - zero qualifying days exist in the corpus; UNTESTED, kept as mirror.
+//   One ambiguous day: QQQ 2026-05-29 (range break at 0.953x volume, candle
+//   undetectable in the charts) - if it is yellow, the low threshold is 1.00.
+//
+// BACKTEST-OPTIMIZED VARIANT (Chris's trading use, see BACKTEST.md) - NOT his
+// identified settings: lookback 10, volume length 10, low ratio 0.7, from the
+// 2016-2026 performance study. Kept here per the cross-check note; set the
+// inputs to those values to trade the optimized variant instead of the replica.
+// Not affiliated with BeardoTrader; a reconstruction from his public charts and posts.
+//@version=6
+indicator("Volume Breakout Candles (Beardo-style replica)", shorttitle="VBC replica", overlay=true)
+
+// ---------- Inputs ----------
+grpRule   = "Breakout rule"
+lookback  = input.int(20, "Breakout lookback (bars)", minval=2, group=grpRule)
+useClose  = input.bool(true, "Breakout on close (else on high/low)", group=grpRule)
+grpVol    = "Volume rule"
+volLen    = input.int(20, "Volume average length", minval=2, group=grpVol)
+volRatio  = input.float(0.9, "Low volume = volume < ratio x average", minval=0.1, step=0.05, group=grpVol)
+volRatioH = input.float(1.0, "High volume = volume > ratio x average", minval=0.1, step=0.05, group=grpVol)
+grpShow   = "Display"
+showHigh  = input.bool(true, "Also color HIGH volume range breaks (lime)", group=grpShow)
+showBase  = input.bool(true, "Color low-volume breakdowns at lows (aqua = selling exhaustion)", group=grpShow)
+markStars = input.bool(true, "Label flagged shooting stars / hammers", group=grpShow)
+
+// ---------- Core logic ----------
+volMA     = ta.sma(volume, volLen)
+hasVol    = not na(volume) and not na(volMA)
+lowVol    = hasVol and volume < volRatio * volMA
+highVol   = hasVol and volume > volRatioH * volMA   // dead zone between the ratios: unmarked
+
+priorHigh = ta.highest(high, lookback)[1]
+priorLow  = ta.lowest(low, lookback)[1]
+
+breakout  = useClose ? close > priorHigh : high > priorHigh
+breakdown = useClose ? close < priorLow  : low  < priorLow
+
+lvbcTop    = breakout and lowVol              // his yellow candle at highs
+hvbc       = (breakout or breakdown) and highVol // lime: range break with sponsorship, either direction
+lvbcBottom = showBase and breakdown and lowVol // mirror at lows: breakdown without sellers (untested in corpus)
+
+// ---------- Geometry layer (his Oct 7 post: a yellow SHOOTING STAR) ----------
+rng        = high - low
+body       = math.abs(close - open)
+upperWick  = high - math.max(close, open)
+lowerWick  = math.min(close, open) - low
+shootStar  = rng > 0 and body <= 0.35 * rng and upperWick >= 2.0 * body and lowerWick <= 0.25 * rng
+hammer     = rng > 0 and body <= 0.35 * rng and lowerWick >= 2.0 * body and upperWick <= 0.25 * rng
+
+// ---------- Painting ----------
+barcolor(lvbcTop ? color.new(color.yellow, 0) : hvbc and showHigh ? color.new(color.lime, 0) : lvbcBottom ? color.new(color.aqua, 0) : na)
+
+plotchar(markStars and lvbcTop and shootStar, "Shooting star LVBC", "▼", location.abovebar, color.new(color.yellow, 0), size=size.tiny)
+plotchar(markStars and lvbcBottom and hammer, "Hammer LVB", "▲", location.belowbar, color.new(color.aqua, 0), size=size.tiny)
+
+// ---------- Alerts ----------
+alertcondition(lvbcTop, title="Low volume breakout candle (top side)", message="LVBC: breakout on low volume - move lacks conviction ({{ticker}} {{interval}})")
+alertcondition(lvbcBottom, title="Low volume breakdown candle (bottom side)", message="LVB: breakdown on low volume - possible selling exhaustion ({{ticker}} {{interval}})")
+alertcondition(hvbc and showHigh, title="High volume range break (lime)", message="VBC: range break on high volume - sponsored move / climax ({{ticker}} {{interval}})")

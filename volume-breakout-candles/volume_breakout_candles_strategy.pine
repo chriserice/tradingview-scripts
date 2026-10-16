@@ -1,0 +1,48 @@
+// LVBC Caution Overlay - TradingView strategy version (Variant A)
+// Replica of Beardo's "low volume breakout candle" idea, tuned per BACKTEST.md.
+// Rule: close above prior N-day high on volume < ratio x SMA(volume, M) = low-conviction
+// breakout -> exit to cash for the next `outBars` sessions, then re-enter.
+// Defaults = the Chris-optimized PRIMARY settings from the 2016-2026 backtest
+// (N=10, M=10, ratio=0.7). All results in-sample; see BACKTEST.md for the verdict
+// and caveats before trusting this with real money.
+// Execution note: the Python simulation acted at the signal bar's close, so this
+// strategy uses process_orders_on_close=true to match. Zero commissions/slippage
+// by default, same as the Python run - set your real costs in Properties.
+//@version=6
+strategy("LVBC Caution Overlay (Variant A)", shorttitle="LVBC Overlay A",
+     overlay=true, initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     commission_type=strategy.commission.percent, commission_value=0.0,
+     pyramiding=0, process_orders_on_close=true)
+
+// ---------- Inputs (defaults = optimized primary from BACKTEST.md) ----------
+lookback = input.int(10, "Breakout lookback N (bars)", minval=2, group="Breakout rule")
+volLen   = input.int(10, "Volume average length M", minval=2, group="Volume rule")
+volRatio = input.float(0.7, "Low volume = volume < ratio x average", minval=0.1, step=0.05, group="Volume rule")
+outBars  = input.int(10, "Sessions out after LVBC (Variant A)", minval=1, group="Overlay")
+
+// ---------- Signal ----------
+volMA     = ta.sma(volume, volLen)
+priorHigh = ta.highest(high, lookback)[1]
+lvbc      = not na(volume) and not na(volMA) and not na(priorHigh) and
+     close > priorHigh and volume < volRatio * volMA
+
+// ---------- Variant A state machine ----------
+// Signal bar: exit at close, arm cooldown. While flat, count down; a fresh LVBC
+// re-arms the cooldown (extension). Re-enter at the close of the bar the
+// cooldown expires on -> sessions out = signal+1 .. signal+outBars.
+var int cooldown = 0
+if lvbc
+    if strategy.position_size > 0
+        strategy.close("Long", comment="LVBC exit")
+    cooldown := outBars
+else if strategy.position_size == 0
+    if cooldown > 1
+        cooldown -= 1
+    else
+        cooldown := 0
+        strategy.entry("Long", strategy.long)
+
+// ---------- Display ----------
+barcolor(lvbc ? color.new(color.yellow, 0) : na)
+plotchar(lvbc, "LVBC", "▼", location.abovebar, color.new(color.yellow, 0), size=size.tiny)
