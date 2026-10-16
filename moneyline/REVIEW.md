@@ -1,6 +1,6 @@
-# Money Line v3 — Script & Settings Review
+# Money Line: Script & Settings Review
 
-**Date:** 2026-10-16 · **Scope:** `moneyline/MoneyLine_v3.pine` (196 lines), `moneyline/README.md`,
+**Date:** 2026-10-16 · **Scope:** `moneyline/MoneyLine.pine` (196 lines), `moneyline/README.md`,
 and the Python port/backtests in `~/workspace/moneyline_backtest/`.
 **Method:** line-by-line audit of the Pine against the Python port; the port was first verified to
 reproduce `RESULTS.md` exactly (below). Settings sweep: Yahoo 1-week bars (split-adjusted, not
@@ -46,7 +46,7 @@ line gets the 4-bar cooldown and the confirmation streaks. The Python port's int
 | Port (as backtested) | 147 | — |
 | Shipped Pine logic (cooled) | 59 | 78% of bars |
 
-Every published three-state number — the README §5 "v3" column, and the §3 caution narrative —
+Every published three-state number — the old README §5 results column, and the §3 caution narrative —
 was computed with the uncooled fast line and therefore **does not describe the script Chris
 actually runs**. The shipped CAUTION state is stickier, with far fewer, longer episodes:
 
@@ -74,7 +74,7 @@ vs engine cd5 −14.0 (rank 104/120) across the current universe (§2).
 ### M1 — MEDIUM: the Pine header cites different headline numbers than the README
 
 The script's header comment presents "BTC CAGR 37.6% → 40.5%, max drawdown −63.6% → −46.7%" as the
-v3 improvement. Those are the **binary cooldown-4** results from `RESULTS.md` round 1. The shipped
+the headline improvement. Those are the **binary cooldown-4** results from `RESULTS.md` round 1. The shipped
 default mode is three-state, whose published BTC numbers are 36.2% / −45.2% (README §5). A reader
 of either file alone gets a different headline for the same default settings.
 
@@ -267,7 +267,7 @@ Against the repo as it exists, the audit/sweep above, and the documentation stan
 with the LVBC script's README (what it is → what it is good for → how to properly use it →
 settings with evidence → limitations):
 
-1. **§7 Files table is wrong twice.** It lists `MoneyLine_v3_README.md` (the file is `README.md`)
+1. **§7 Files table is wrong twice.** It lists a README filename that does not exist (the file is `README.md`)
    and `MoneyLine_Bullmania_Style.pine` — the v2 script **does not exist in this repo** (nor in
    `~/workspace/moneyline_backtest/`); there is no v2 Pine file anywhere to reference.
 2. **§6's "Other timeframes were not backtested" is false** (`RESULTS.md` round 3 tested daily)
@@ -317,7 +317,7 @@ settings with evidence → limitations):
 
 ## 6. Changes applied from this review (2026-10-16)
 
-Applied to `MoneyLine_v3.pine` (defaults and comments only; no logic changes) and
+Applied to `MoneyLine.pine` (defaults and comments only; no logic changes) and
 `README.md` (full rewrite to the LVBC documentation standard):
 
 - **Default preset is now Conservative (22 / 3.5)** per §2.6 item 1. The preset list
@@ -339,7 +339,7 @@ Applied to `MoneyLine_v3.pine` (defaults and comments only; no logic changes) an
   to the README for current three-state evidence. The stale "~3.8 flips/yr" header
   figure was replaced with a window-qualified range.
 - **README gaps from §4 closed:** files table lists only files that exist
-  (`MoneyLine_v3.pine`, `README.md`, `REVIEW.md`, the backtest folder); the false
+  (`MoneyLine.pine`, `README.md`, `REVIEW.md`, the backtest folder); the false
   "other timeframes were not backtested" claim is replaced by a daily-use section
   carrying the §3 numbers and caveats; caution statistics describe the shipped
   script; the §5 sweep (method, top-of-grid, per-name binary tables, three-state

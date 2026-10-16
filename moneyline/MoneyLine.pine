@@ -44,7 +44,7 @@
 //      this script and the reference engine; see the input comment).
 // =============================================================================
 
-indicator("Money Line v3 (Bullmania-Style)", shorttitle="MoneyLine v3", overlay=true, max_labels_count=500, max_lines_count=500)
+indicator("Money Line (Bullmania-Style)", shorttitle="MoneyLine", overlay=true, max_labels_count=500, max_lines_count=500)
 
 // -----------------------------------------------------------------------------
 //  INPUTS
@@ -64,13 +64,13 @@ useWicks  = input.bool(true,  "Use Wicks (High/Low) for Flip",      group=grp_co
 srcMA     = input.source(close, "Confirmation Source",               group=grp_core)
 smoothLen = input.int(3,      "Confirmation Smoothing (EMA)",        minval=1, group=grp_core)
 
-grp_v3     = "v3 Noise Controls"
+grp_v3     = "Noise Controls"
 // Cooldown semantics (REVIEW.md finding H2): this script blocks C bars
 // after a flip; the Python reference engine blocks C-1 bars for the same
 // input value. So the input value 3 here reproduces exactly the strength
 // the backtests validated as "cooldown 4". The logic is unchanged; only
 // the default input moved from 4 to 3 to match the backtested strength.
-cooldownBars = input.int(3,   "Flip Cooldown (bars)",                minval=0, group=grp_v3, tooltip="After a flip, ignore opposite flips for N bars. Default 3 = the backtested 'cooldown 4' strength (this script blocks one more bar than the reference engine for the same input; see code comment). 0 = v2 behavior.")
+cooldownBars = input.int(3,   "Flip Cooldown (bars)",                minval=0, group=grp_v3, tooltip="After a flip, ignore opposite flips for N bars. Default 3 = the backtested 'cooldown 4' strength (this script blocks one more bar than the reference engine for the same input; see code comment). 0 = no cooldown.")
 confirmBars  = input.int(1,   "Flip Confirmation (bars)",            minval=1, group=grp_v3, tooltip="Flip requires N consecutive bars of the cross condition. Backtesting showed 2+ hurts (lag > noise saved). Leave at 1.")
 useBand      = input.bool(true,"Caution Band (three-state regime)",  group=grp_v3, tooltip="Adds a faster inner line. Slow bull + fast bear = CAUTION (half risk).")
 fastMult     = input.float(2.0,"Caution Band ATR Multiplier",         minval=0.5, step=0.1, group=grp_v3)
@@ -188,11 +188,11 @@ if showFlipLv and barstate.islast
 //  ALERTS (dynamic messages: state + flip level + distance)
 // -----------------------------------------------------------------------------
 if bullFlip and (alertOnBar or barstate.isconfirmed)
-    alert("MoneyLine v3 flipped BULLISH (RISK-ON) on " + syminfo.ticker + " (" + timeframe.period + ") at " + str.tostring(close, format.mintick) + " | flip level " + str.tostring(slowLine, format.mintick), alert.freq_once_per_bar_close)
+    alert("Money Line flipped BULLISH (RISK-ON) on " + syminfo.ticker + " (" + timeframe.period + ") at " + str.tostring(close, format.mintick) + " | flip level " + str.tostring(slowLine, format.mintick), alert.freq_once_per_bar_close)
 if bearFlip and (alertOnBar or barstate.isconfirmed)
-    alert("MoneyLine v3 flipped BEARISH (RISK-OFF) on " + syminfo.ticker + " (" + timeframe.period + ") at " + str.tostring(close, format.mintick) + " | flip level " + str.tostring(slowLine, format.mintick), alert.freq_once_per_bar_close)
+    alert("Money Line flipped BEARISH (RISK-OFF) on " + syminfo.ticker + " (" + timeframe.period + ") at " + str.tostring(close, format.mintick) + " | flip level " + str.tostring(slowLine, format.mintick), alert.freq_once_per_bar_close)
 if useBand and fastBear and (alertOnBar or barstate.isconfirmed)
-    alert("MoneyLine v3 CAUTION on " + syminfo.ticker + " (" + timeframe.period + "): fast band flipped bearish while slow line holds — consider half risk. Flip level " + str.tostring(slowLine, format.mintick), alert.freq_once_per_bar_close)
+    alert("Money Line CAUTION on " + syminfo.ticker + " (" + timeframe.period + "): fast band flipped bearish while slow line holds — consider half risk. Flip level " + str.tostring(slowLine, format.mintick), alert.freq_once_per_bar_close)
 
 // -----------------------------------------------------------------------------
 //  STATUS TABLE (top-right)
@@ -201,7 +201,7 @@ var table tbl = table.new(position.top_right, 2, 5, border_width=1)
 if barstate.islast
     distTxt = str.tostring(distAtr, "#.#") + " ATR (" + (distAtr >= 0 ? "+" : "") + str.tostring(distPct, "#.#") + "%)"
     bsfTxt  = na(bsf) ? "—" : str.tostring(bsf)
-    table.cell(tbl, 0, 0, "Money Line v3",   bgcolor=color.new(color.black, 70), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 0, "Money Line",   bgcolor=color.new(color.black, 70), text_color=color.white, text_size=size.small)
     table.cell(tbl, 1, 0, regimeName,        bgcolor=regimeColor,                text_color=color.white, text_size=size.small)
     table.cell(tbl, 0, 1, "Flip Level",      bgcolor=color.new(color.black, 70), text_color=color.white, text_size=size.small)
     table.cell(tbl, 1, 1, str.tostring(slowLine, format.mintick), bgcolor=color.new(color.black, 70), text_color=color.white, text_size=size.small)

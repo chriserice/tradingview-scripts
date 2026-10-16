@@ -74,7 +74,7 @@ What it is **not** good for:
 ### Installation
 
 1. Open [TradingView](https://www.tradingview.com) → **Pine Editor** (bottom panel).
-2. Delete the template code, paste the full contents of `MoneyLine_v3.pine`.
+2. Delete the template code, paste the full contents of `MoneyLine.pine`.
 3. Click **Add to chart**.
 4. Set the chart timeframe to **Weekly (1W)**. That is the timeframe the settings
    evidence in §5 was built on. (Daily bars are a separate question; see §6.)
@@ -489,7 +489,7 @@ scripts that produced §5 and §6).
 
 | File | What |
 |---|---|
-| `MoneyLine_v3.pine` | The indicator: paste into TradingView Pine Editor |
+| `MoneyLine.pine` | The indicator: paste into TradingView Pine Editor |
 | `README.md` | This file |
 | `REVIEW.md` | The October 2026 script and settings review this README's §5 and §6 are drawn from |
 | `~/workspace/moneyline_backtest/` | Python port, backtest engine, `RESULTS.md`, and the 2026 sweep data and scripts |
